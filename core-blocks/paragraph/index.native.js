@@ -7,7 +7,7 @@ import { __ } from '@wordpress/i18n';
 import { PlainText } from '@wordpress/editor';
 import { createBlock, getPhrasingContentSchema } from '@wordpress/blocks';
 
-//import RCTAztecView from 'react-native-aztec';
+import RCTAztecView from 'react-native-aztec2';
 
 export const name = 'core/paragraph';
 
@@ -46,11 +46,19 @@ const schema = {
 	customFontSize: {
 		type: 'number',
 	},
+	eventCount : {
+		type: 'number',
+	},
+	aztecHeight : {
+		type: 'number',
+	}
 };
 
 const supports = {
 	className: false,
 };
+
+const _minHeight = 50;
 
 export const settings = {
 
@@ -98,18 +106,37 @@ export const settings = {
 	},
 
 	edit( { attributes, setAttributes, style } ) {
+		if (attributes.aztecHeight == null) {
+			attributes.aztecHeight = _minHeight;
+		}
+		//console.log(attributes);
 		return (
-			<View>
-				<PlainText
-					value={ attributes.content }
-					style={ style }
-					multiline={ true }
-					underlineColorAndroid="transparent"
-					onChange={ ( content ) => setAttributes( { content } ) }
-					placeholder={ __( 'Write code…' ) }
-					aria-label={ __( 'Code' ) }
-				/>
-			</View>
+			<RCTAztecView
+				accessibilityLabel="aztec-view"
+				style={ style, [ 
+					{ minHeight: Math.max( _minHeight, attributes.aztecHeight ) },
+				] }
+				text={ { text: attributes.content, eventCount: attributes.eventCount } }
+				onContentSizeChange={ ( event ) => {
+					console.log(event.nativeEvent);
+					setAttributes( {
+						...attributes, 
+						aztecHeight: event.nativeEvent.contentSize.height
+					 }
+					);
+				} }
+				onChange={ ( event ) => {
+					console.log(event.nativeEvent);
+					setAttributes( {
+						...attributes,
+						content: event.nativeEvent.text,
+						eventCount: event.nativeEvent.eventCount
+					 } 
+					) }
+				}
+				color={ 'black' }
+				maxImagesWidth={ 200 }
+			/>
 		);
 	},
 	
