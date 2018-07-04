@@ -23,8 +23,51 @@ describe( 'Preview', () => {
 		await newPost();
 	} );
 
+	let lastPreviewPage;
+
+	/**
+	 * Clicks the preview button and returns the generated preview window page,
+	 * either the newly created tab or the redirected existing target. This is
+	 * required because Chromium infuriatingly disregards same target name in
+	 * specific undetermined circumstances, else our efforts to reuse the same
+	 * popup have been fruitless and exhausting. It is worth exploring further,
+	 * perhaps considering factors such as origin of the interstitial page (the
+	 * about:blank placeholder screen).
+	 *
+	 * @return {Promise} Promise resolving with the focused preview page.
+	 */
+	async function getOpenedPreviewPage() {
+		const race = [
+			new Promise( ( resolve ) => {
+				browser.once( 'targetcreated', async ( target ) => {
+					resolve( await target.page() );
+				} );
+			} ),
+		];
+
+		if ( lastPreviewPage ) {
+			race.push( new Promise( ( resolve ) => (
+				lastPreviewPage.once( 'load', () => {
+					resolve( lastPreviewPage );
+				} )
+			) ) );
+		}
+
+		const [ , previewPage ] = await Promise.all( [
+			page.click( '.editor-post-preview' ),
+			Promise.race( race ),
+		] );
+
+		lastPreviewPage = previewPage;
+
+		await previewPage.bringToFront();
+
+		return previewPage;
+	}
+
 	it( 'Should open a preview window for a new post', async () => {
 		const editorPage = page;
+		let previewPage;
 
 		// Disabled until content present.
 		const isPreviewDisabled = await page.$$eval(
@@ -35,26 +78,7 @@ describe( 'Preview', () => {
 
 		await editorPage.type( '.editor-post-title__input', 'Hello World' );
 
-		// Don't proceed with autosave until preview window page is resolved.
-		await editorPage.setRequestInterception( true );
-
-		let [ , previewPage ] = await Promise.all( [
-			editorPage.click( '.editor-post-preview' ),
-			new Promise( ( resolve ) => {
-				browser.once( 'targetcreated', async ( target ) => {
-					resolve( await target.page() );
-				} );
-			} ),
-		] );
-
-		// Interstitial screen while save in progress.
-		expect( previewPage.url() ).toBe( 'about:blank' );
-
-		// Release request intercept should allow redirect to occur after save.
-		await Promise.all( [
-			previewPage.waitForNavigation(),
-			editorPage.setRequestInterception( false ),
-		] );
+		previewPage = await getOpenedPreviewPage();
 
 		// When autosave completes for a new post, the URL of the editor should
 		// update to include the ID. Use this to assert on preview URL.
@@ -63,7 +87,9 @@ describe( 'Preview', () => {
 		} ) ).jsonValue();
 
 		let expectedPreviewURL = getUrl( '', `?p=${ postId }&preview=true` );
-		expect( previewPage.url() ).toBe( expectedPreviewURL );
+		await previewPage.waitForFunction( ( _expectedPreviewURL ) => {
+			return window.location.href === _expectedPreviewURL;
+		}, {}, expectedPreviewURL );
 
 		// Title in preview should match input.
 		let previewTitle = await previewPage.$eval( '.entry-title', ( node ) => node.textContent );
@@ -72,40 +98,21 @@ describe( 'Preview', () => {
 		// Return to editor to change title.
 		await editorPage.bringToFront();
 		await editorPage.type( '.editor-post-title__input', '!' );
-
-		// Second preview should reuse same popup frame, with interstitial.
-		await editorPage.setRequestInterception( true );
-		await Promise.all( [
-			editorPage.click( '.editor-post-preview' ),
-			// Note: `load` event is used since, while a `window.open` with
-			// `about:blank` is called, the target window doesn't actually
-			// navigate to `about:blank` (it is treated as noop). But when
-			// the `document.write` + `document.close` of the interstitial
-			// finishes, a `load` event is fired.
-			new Promise( ( resolve ) => previewPage.once( 'load', resolve ) ),
-		] );
-		await editorPage.setRequestInterception( false );
-
-		// Wait for preview to load.
-		await new Promise( ( resolve ) => {
-			previewPage.once( 'load', resolve );
-		} );
+		previewPage = await getOpenedPreviewPage();
 
 		// Title in preview should match updated input.
-		previewTitle = await previewPage.$eval( '.entry-title', ( node ) => node.textContent );
-		expect( previewTitle ).toBe( 'Hello World!' );
+		await previewPage.waitForFunction( () => {
+			const title = document.querySelector( '.entry-title' );
+			return title && title.textContent === 'Hello World!';
+		} );
 
 		// Pressing preview without changes should bring same preview window to
-		// front and reload, but should not show interstitial. Intercept editor
-		// requests in case a save attempt occurs, to avoid race condition on
-		// the load event and title retrieval.
+		// front and reload, but should not show interstitial.
 		await editorPage.bringToFront();
-		await editorPage.setRequestInterception( true );
-		await editorPage.click( '.editor-post-preview' );
-		await new Promise( ( resolve ) => previewPage.once( 'load', resolve ) );
+		previewPage = await getOpenedPreviewPage();
+		await previewPage.waitForNavigation();
 		previewTitle = await previewPage.$eval( '.entry-title', ( node ) => node.textContent );
 		expect( previewTitle ).toBe( 'Hello World!' );
-		await editorPage.setRequestInterception( false );
 
 		// Preview for published post (no unsaved changes) directs to canonical
 		// URL for post.
@@ -116,43 +123,41 @@ describe( 'Preview', () => {
 			page.click( '.editor-post-publish-panel__header button' ),
 		] );
 		expectedPreviewURL = await editorPage.$eval( '.notice-success a', ( node ) => node.href );
-		// Note / Temporary: It's expected that Chrome should reuse the same
-		// tab with window name `wp-preview-##`, yet in this instance a new tab
-		// is unfortunately created.
-		previewPage = ( await Promise.all( [
-			editorPage.click( '.editor-post-preview' ),
-			new Promise( ( resolve ) => {
-				browser.once( 'targetcreated', async ( target ) => {
-					resolve( await target.page() );
-				} );
-			} ),
-		] ) )[ 1 ];
+		previewPage = await getOpenedPreviewPage();
 		expect( previewPage.url() ).toBe( expectedPreviewURL );
 
 		// Return to editor to change title.
 		await editorPage.bringToFront();
 		await editorPage.type( '.editor-post-title__input', ' And more.' );
 
-		// Published preview should reuse same popup frame, with interstitial.
-		await editorPage.setRequestInterception( true );
-		await Promise.all( [
-			editorPage.click( '.editor-post-preview' ),
-			new Promise( ( resolve ) => previewPage.once( 'load', resolve ) ),
-		] );
-		await editorPage.setRequestInterception( false );
-
-		// Wait for preview to load.
-		await new Promise( ( resolve ) => {
-			previewPage.once( 'load', resolve );
-		} );
+		// Published preview should reuse same popup frame.
+		previewPage = await getOpenedPreviewPage();
 
 		// Title in preview should match updated input.
-		previewTitle = await previewPage.$eval( '.entry-title', ( node ) => node.textContent );
-		expect( previewTitle ).toBe( 'Hello World! And more.' );
+		await previewPage.waitForFunction( () => {
+			const title = document.querySelector( '.entry-title' );
+			return title && title.textContent === 'Hello World! And more.';
+		} );
 
 		// Published preview URL should include ID and nonce parameters.
 		const { query } = parse( previewPage.url(), true );
 		expect( query ).toHaveProperty( 'preview_id' );
 		expect( query ).toHaveProperty( 'preview_nonce' );
+
+		// Return to editor. Previewing already-autosaved preview tab should
+		// reuse the opened tab, skipping interstitial. This resolves an edge
+		// cases where the post is dirty but not autosaveable (because the
+		// autosave is already up-to-date).
+		//
+		// See: https://github.com/WordPress/gutenberg/issues/7561
+		await editorPage.bringToFront();
+		previewPage = await getOpenedPreviewPage();
+
+		// Preview page will reload. Wait for navigation to complete.
+		await previewPage.waitForNavigation();
+
+		// Title in preview should match updated input.
+		previewTitle = await previewPage.$eval( '.entry-title', ( node ) => node.textContent );
+		expect( previewTitle ).toBe( 'Hello World! And more.' );
 	} );
 } );

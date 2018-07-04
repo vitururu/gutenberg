@@ -25,7 +25,7 @@ export class PostPreviewButton extends Component {
 		// This relies on the window being responsible to unset itself when
 		// navigation occurs or a new preview window is opened, to avoid
 		// unintentional forceful redirects.
-		if ( previewLink && previewLink !== prevProps.previewLink ) {
+		if ( previewLink && ! prevProps.previewLink ) {
 			this.setPreviewWindowLink( previewLink );
 		}
 	}
@@ -38,11 +38,9 @@ export class PostPreviewButton extends Component {
 	 */
 	setPreviewWindowLink( url ) {
 		const { previewWindow } = this;
-		if ( ! previewWindow || previewWindow.location.href === url ) {
-			return;
+		if ( previewWindow ) {
+			previewWindow.location = url;
 		}
-
-		previewWindow.location = url;
 	}
 
 	getWindowTarget() {
@@ -51,24 +49,35 @@ export class PostPreviewButton extends Component {
 	}
 
 	saveForPreview( event ) {
-		const { isDirty, isNew } = this.props;
+		const { isAutosaveable, previewLink } = this.props;
 
-		// Let default link behavior occur if no changes to saved post
-		if ( ! isDirty && ! isNew ) {
+		// If there are no changes to autosave, we cannot perform the save, but
+		// if there is an existing preview link (e.g. previous published post
+		// autosave), it should be reused as the popup destination.
+		if ( ! isAutosaveable && ! previewLink ) {
 			return;
 		}
-
-		// Save post prior to opening window
-		this.props.autosave();
 
 		// Open a popup, BUT: Set it to a blank page until save completes. This
 		// is necessary because popups can only be opened in response to user
 		// interaction (click), but we must still wait for the post to save.
 		event.preventDefault();
 		this.previewWindow = window.open(
-			'about:blank',
+			previewLink ? previewLink : 'about:blank',
 			this.getWindowTarget()
 		);
+
+		// When popup is closed or redirected by setPreviewWindowLink, delete
+		// reference to avoid later assignment of location in a post update.
+		this.previewWindow.onbeforeunload = () => {
+			delete this.previewWindow;
+		};
+
+		if ( ! isAutosaveable ) {
+			return;
+		}
+
+		this.props.autosave();
 
 		const markup = `
 			<div>
@@ -95,10 +104,6 @@ export class PostPreviewButton extends Component {
 
 		this.previewWindow.document.write( markup );
 		this.previewWindow.document.close();
-
-		// When popup is closed or redirected by setPreviewWindowLink, delete
-		// reference to avoid later assignment of location in a post update.
-		this.previewWindow.onbeforeunload = () => delete this.previewWindow;
 	}
 
 	render() {
@@ -132,6 +137,7 @@ export default compose( [
 			isEditedPostDirty,
 			isEditedPostNew,
 			isEditedPostSaveable,
+			isEditedPostAutosaveable,
 		} = select( 'core/editor' );
 		const {
 			getPostType,
@@ -144,6 +150,7 @@ export default compose( [
 			isDirty: isEditedPostDirty(),
 			isNew: isEditedPostNew(),
 			isSaveable: isEditedPostSaveable(),
+			isAutosaveable: isEditedPostAutosaveable(),
 			isViewable: get( postType, [ 'viewable' ], false ),
 		};
 	} ),
