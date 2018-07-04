@@ -15,7 +15,6 @@ import { RichText, editorMediaUpload } from '@wordpress/editor';
  */
 import './style.scss';
 import { default as edit, defaultColumnsNumber } from './edit';
-import './theme.scss';
 
 const blockAttributes = {
 	align: {
